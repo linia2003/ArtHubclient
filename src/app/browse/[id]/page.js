@@ -65,6 +65,12 @@ export default function ArtworkDetailPage() {
       const data = await response.json();
       
       if (data.success && data.url) {
+        // Save purchase context so the dashboard can call confirm-purchase after redirect
+        // This is the local dev fallback since Stripe webhooks can't reach localhost
+        sessionStorage.setItem("pending_artwork_purchase", JSON.stringify({
+          artworkId: id,
+          buyerName: session.user.name || "Collector",
+        }));
         window.location.href = data.url;
       } else {
         alert(data.message || "Could not spin up payment portal instance.");

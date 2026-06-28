@@ -1,16 +1,18 @@
 "use client";
 
-import React, { useState, useEffect } from "react";
-import { useRouter } from "next/navigation";
+import React, { useState, useEffect, Suspense } from "react";
+import { useRouter, useSearchParams } from "next/navigation";
 import { Button, Input, Card } from "@heroui/react";
 import { authClient } from "@/lib/auth-client";
 
-export default function UserDashboard() {
+function UserDashboard() {
   const router = useRouter();
+  const searchParams = useSearchParams();
   const { data: session, isPending } = authClient.useSession();
   
   const [purchases, setPurchases] = useState([]);
   const [loading, setLoading] = useState(true);
+  const [liveSubscriptionTier, setLiveSubscriptionTier] = useState(null);
 
   // PROFILE MANAGEMENT STATE MANAGEMENT
   const [newName, setNewName] = useState("");
@@ -22,8 +24,9 @@ export default function UserDashboard() {
   const userEmail = session?.user?.email;
   const userName = session?.user?.name || "Collector";
   
-  // Read subscription tier dynamically
-  const activeTier = session?.user?.subscriptionTier || "free";
+  // Use liveSubscriptionTier fetched from DB — session does NOT carry subscriptionTier
+  // because auth.js additionalFields only declares "role", not "subscriptionTier"
+  const activeTier = liveSubscriptionTier || "free";
 
   useEffect(() => {
     if (!isPending) {
@@ -34,6 +37,52 @@ export default function UserDashboard() {
       }
     }
   }, [session, isPending]);
+
+  // Fetch live subscriptionTier directly from DB — session doesn't carry it
+  useEffect(() => {
+    if (userEmail) {
+      const apiBaseUrl = process.env.NEXT_PUBLIC_API_URL || "http://localhost:5000";
+      fetch(`${apiBaseUrl}/api/admin/users`)
+        .then((res) => res.json())
+        .then((data) => {
+          if (data.success && data.users) {
+            const me = data.users.find(
+              (u) => u.email.toLowerCase() === userEmail.toLowerCase()
+            );
+            if (me?.subscriptionTier) setLiveSubscriptionTier(me.subscriptionTier);
+          }
+        })
+        .catch(() => {});
+    }
+  }, [userEmail]);
+
+  // After Stripe redirects back with ?purchase_success=true, call the confirm endpoint.
+  // This is the reliable fallback since the Stripe webhook can't reach localhost in dev.
+  useEffect(() => {
+    const purchaseSuccess = searchParams.get("purchase_success");
+    if (purchaseSuccess === "true" && userEmail) {
+      const pending = sessionStorage.getItem("pending_artwork_purchase");
+      if (pending) {
+        try {
+          const { artworkId, buyerName } = JSON.parse(pending);
+          const apiBaseUrl = process.env.NEXT_PUBLIC_API_URL || "http://localhost:5000";
+          fetch(`${apiBaseUrl}/api/payment/confirm-purchase`, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ buyerEmail: userEmail, buyerName, artworkId }),
+          })
+            .then(() => {
+              sessionStorage.removeItem("pending_artwork_purchase");
+              // Clean the URL param then reload purchases
+              router.replace("/dashboard/user");
+            })
+            .catch(() => sessionStorage.removeItem("pending_artwork_purchase"));
+        } catch {
+          sessionStorage.removeItem("pending_artwork_purchase");
+        }
+      }
+    }
+  }, [searchParams, userEmail]);
 
   // Sync historical purchase records and cross-verify missing visual assets
   useEffect(() => {
@@ -296,5 +345,17 @@ export default function UserDashboard() {
       </div>
 
     </div>
+  );
+}
+
+export default function UserDashboardPage() {
+  return (
+    <Suspense fallback={
+      <div className="min-h-screen flex items-center justify-center bg-black text-zinc-400">
+        <p className="animate-pulse">Loading dashboard...</p>
+      </div>
+    }>
+      <UserDashboard />
+    </Suspense>
   );
 }
